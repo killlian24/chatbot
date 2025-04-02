@@ -1,0 +1,131 @@
+# DSGVO-konformer AI-Chatbot mit Strapi-Inhalten, lokalem Modell (Mistral via Ollama) und Chroma
+
+# Projektstruktur:
+# chatbot/
+# ├── app/
+# │   ├── strapi_loader.py
+# │   ├── build_index.py
+# │   ├── chat_server.py
+# │   └── web_frontend.html
+# ├── Dockerfile
+# ├── docker-compose.yml
+
+# ---------- strapi_loader.py ----------
+import requests
+
+def fetch_strapi_content():
+    url = "http://localhost:1337/api/artikel?populate=*"
+    response = requests.get(url)
+    response.raise_for_status()
+    data = response.json()["data"]
+
+    texts = []
+    for entry in data:
+        title = entry["attributes"].get("title", "")
+        content = entry["attributes"].get("content", "")
+        texts.append(f"{title}\n\n{content}")
+    return texts
+
+# ---------- build_index.py ----------
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings import OllamaEmbeddings
+from langchain.vectorstores import Chroma
+from strapi_loader import fetch_strapi_content
+
+texts = fetch_strapi_content()
+splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+docs = splitter.create_documents(texts)
+
+embeddings = OllamaEmbeddings(model="mistral")
+db = Chroma.from_documents(docs, embeddings, persist_directory="./chroma_db")
+db.persist()
+
+# ---------- chat_server.py ----------
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from langchain.vectorstores import Chroma
+from langchain.llms import Ollama
+from langchain.chains import RetrievalQA
+from langchain.embeddings import OllamaEmbeddings
+
+app = FastAPI()
+
+app.mount("/", StaticFiles(directory="/app", html=True), name="static")
+
+class Query(BaseModel):
+    question: str
+
+@app.post("/chat")
+def chat(query: Query):
+    db = Chroma(persist_directory="./chroma_db", embedding_function=OllamaEmbeddings(model="mistral"))
+    retriever = db.as_retriever()
+    qa = RetrievalQA.from_chain_type(llm=Ollama(model="mistral"), retriever=retriever)
+    answer = qa.run(query.question)
+    return {"answer": answer}
+
+# ---------- web_frontend.html ----------
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chatbot</title>
+</head>
+<body style="font-family: sans-serif; max-width: 600px; margin: 2rem auto;">
+  <h1>Frage mich etwas!</h1>
+  <input type="text" id="frage" placeholder="Deine Frage..." style="width: 100%; padding: 0.5rem;"/>
+  <button onclick="senden()" style="margin-top: 1rem; padding: 0.5rem 1rem;">Senden</button>
+  <div id="antwort" style="margin-top: 2rem; white-space: pre-wrap;"></div>
+
+  <script>
+    async function senden() {
+      const frage = document.getElementById("frage").value;
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: frage })
+      });
+      const data = await res.json();
+      document.getElementById("antwort").innerText = data.answer;
+    }
+  </script>
+</body>
+</html>
+
+# ---------- Dockerfile ----------
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY ./app /app
+
+RUN pip install --no-cache-dir fastapi uvicorn langchain chromadb requests
+
+CMD ["uvicorn", "chat_server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ---------- docker-compose.yml ----------
+version: '3.8'
+
+services:
+  chatbot:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chroma_db:/app/chroma_db
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_MODELS=mistral
+
+volumes:
+  ollama_models:
