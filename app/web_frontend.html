@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chatbot</title>
+</head>
+<body style="font-family: sans-serif; max-width: 600px; margin: 2rem auto;">
+  <h1>Frage mich etwas!</h1>
+  <input type="text" id="frage" placeholder="Deine Frage..." style="width: 100%; padding: 0.5rem;"/>
+  <button onclick="senden()" style="margin-top: 1rem; padding: 0.5rem 1rem;">Senden</button>
+  <div id="antwort" style="margin-top: 2rem; white-space: pre-wrap;"></div>
+
+  <script>
+    async function senden() {
+      const frage = document.getElementById("frage").value;
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: frage })
+      });
+      const data = await res.json();
+      document.getElementById("antwort").innerText = data.answer;
+    }
+  </script>
+</body>
+</html>
